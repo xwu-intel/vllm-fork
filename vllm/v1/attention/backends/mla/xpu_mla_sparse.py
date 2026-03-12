@@ -77,7 +77,7 @@ class XPUMLASparseBackend(AttentionBackend):
 
     @classmethod
     def get_supported_head_sizes(cls) -> list[int]:
-        return [576]
+        return [288, 576]
 
 
 @dataclass
@@ -193,6 +193,9 @@ class XPUMLASparseImpl(SparseMLAAttentionImpl[XPUMLASparseMetadata]):
         self.num_kv_heads = num_kv_heads
         self.kv_cache_dtype = kv_cache_dtype
         self.kv_lora_rank: int = mla_args["kv_lora_rank"]
+        self.qk_nope_head_dim: int = mla_args["qk_nope_head_dim"]
+        self.v_head_dim: int = mla_args["v_head_dim"]
+        self.W_UK = mla_args.get("kv_b_proj")
         self.softmax_scale = scale
         assert indexer is not None
         self.topk_indices_buffer: torch.Tensor | None = indexer.topk_indices_buffer
@@ -216,6 +219,7 @@ class XPUMLASparseImpl(SparseMLAAttentionImpl[XPUMLASparseMetadata]):
             kv_c_and_k_pe_cache,
             topk_indices,
             sm_scale=self.softmax_scale,
+            d_v=self.kv_lora_rank,
         )
 
         return output[:, : self.num_heads, :]
@@ -235,8 +239,9 @@ class XPUMLASparseImpl(SparseMLAAttentionImpl[XPUMLASparseMetadata]):
 
         # Concatenate q if it's a tuple (ql_nope, q_pe)
         if isinstance(q, tuple):
-            q = torch.cat(q, dim=-1)
-
+            q_nope, q_pe = q
+            q = torch.cat([q_nope, q_pe], dim=-1)
+        
         num_actual_toks = q.shape[0]
 
         assert self.topk_indices_buffer is not None

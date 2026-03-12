@@ -1064,6 +1064,13 @@ except ImportError:
                 "MLA models using TRITON_MLA will require flash_attn. "
                 "AITER_MLA backends use aiter kernels instead."
             )
+    elif current_platform.is_xpu():
+        try:
+            from vllm_xpu_kernels.flash_attn_interface import flash_attn_varlen_func
+        except ImportError:
+            logger.debug(
+                "vllm_xpu_kernels not available on XPU."
+            )
 
 
 def dynamic_per_batched_tensor_quant(

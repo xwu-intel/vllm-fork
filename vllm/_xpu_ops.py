@@ -394,11 +394,15 @@ class xpu_ops:
         mask = positions <= index_end_pos
         # mask: [B * N, L]
         logits = logits.masked_fill(~mask, float("-inf"))
-        topk_indices = logits.topk(topk_tokens, dim=-1)[1].to(torch.int32)  # [B * N, K]
+        k = min(topk_tokens, logits.size(-1))
+        topk_indices = logits.topk(k, dim=-1)[1].to(torch.int32)  # [B * N, K]
         # ensure we don't set indices for the top k
         # that is out of range(masked already)
         # this will happen if context length is shorter than K
         topk_indices[topk_indices > index_end_pos] = -1
-        raw_topk_indices[: topk_indices.shape[0], : topk_indices.shape[1]] = (
+        
+        # Initialize buffer with -1 (invalid index)
+        raw_topk_indices.fill_(-1)
+        raw_topk_indices[: topk_indices.shape[0], : k] = (
             topk_indices
         )

@@ -53,15 +53,17 @@ def _bf16_mla_sparse_kernel(
 
     offs_d = tl.arange(0, BLOCK_DMODEL)
     offs_dv = tl.arange(0, BLOCK_DV)
+    
+    dim_nope = dim_qk - BLOCK_DPE
 
     off_q = cur_q * stride_q_token + cur_head[:, None] * stride_q_head + offs_d[None, :]
-    mask_dmodel = offs_d < BLOCK_DMODEL
+    mask_dmodel = offs_d < dim_nope
     q = tl.load(
         q_buffer + off_q, mask=(mask_h[:, None]) & (mask_dmodel[None, :]), other=0.0
     )
 
     if BLOCK_DPE > 0:
-        offs_dpe = BLOCK_DMODEL + tl.arange(0, BLOCK_DPE)
+        offs_dpe = dim_nope + tl.arange(0, BLOCK_DPE)
         off_qpe = (
             cur_q * stride_q_token
             + cur_head[:, None] * stride_q_head
@@ -92,7 +94,9 @@ def _bf16_mla_sparse_kernel(
         )
 
         mask_kv = (indices >= 0) & (indices < seq_kv)
+        
         mask_kv_d = mask_dmodel
+        
         offs_k = (
             indices[None, :] * stride_k_token
             + cur_kv_head_id * stride_k_head
@@ -179,7 +183,7 @@ def triton_bf16_mla_sparse_interface(
     kv: torch.Tensor,  # [num_tokens, num_heads_kv, dim_qk]
     indices: torch.Tensor,  # [num_tokens, num_heads_kv, topk]
     sm_scale: float,
-    d_v: int = 512,
+    d_v: int = 128,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     out : [num_tokens, num_heads_q, d_v]
@@ -188,22 +192,21 @@ def triton_bf16_mla_sparse_interface(
     """
     num_tokens, num_heads_q, dim_qk = q.shape
     _, num_heads_kv, _ = kv.shape
-    assert dim_qk == kv.shape[2], "q and kv have different head dimensions"
 
-    # for deepseek v3.2, index topk should be 2048
+    # index_topk is inferred from indices shape
     _, _, index_topk = indices.shape
 
     BLOCK_H = 16
-    BLOCK_DMODEL = 512
-    BLOCK_DPE = 64
+    BLOCK_DPE = 32
     BLOCK_M = 32
     BLOCK_N = 16
-    BLOCK_DV = 512
-    assert d_v == BLOCK_DV, "only support d_v = 512"
+    BLOCK_DV = triton.next_power_of_2(d_v)
+    assert d_v == BLOCK_DV, "only support d_v power of 2"
 
-    assert dim_qk == BLOCK_DMODEL + BLOCK_DPE, (
-        "dim_qk does not match BLOCK_DMODEL + BLOCK_DPE"
-    )
+    assert dim_qk > BLOCK_DPE, f"dim_qk={dim_qk} must be larger than BLOCK_DPE={BLOCK_DPE}"
+    dim_nope = dim_qk - BLOCK_DPE
+    BLOCK_DMODEL = triton.next_power_of_2(dim_nope)
+    
     assert num_heads_kv == 1, "only support kv head = 1 for now"
     assert index_topk % BLOCK_N == 0, "index_topk must be multiple of BLOCK_N"
 
